@@ -11,13 +11,13 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "Vortexa.com"
+      "bundleIdentifier": "com.vortexa.app"
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#0C4A6E"
       },
-      "package": "Vortexa.com",
+      "package": "com.vortexa.app",
       "googleServicesFile": "./google-services.json"
     },
     "plugins": [

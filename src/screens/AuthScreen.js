@@ -56,8 +56,8 @@ export default function AuthScreen() {
       await auth().sendSignInLinkToEmail(email, {
         handleCodeInApp: true,
         url: 'https://vortexa-d430e.firebaseapp.com/__/auth/action',
-        iOS: { bundleId: 'Vortexa.com' },
-        android: { packageName: 'Vortexa.com', installApp: true },
+        iOS: { bundleId: 'com.vortexa.app' },
+        android: { packageName: 'com.vortexa.app', installApp: true },
       });
       setStep('email-sent');
     } catch (e) {
