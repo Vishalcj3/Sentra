@@ -20,6 +20,8 @@ yarn-debug.*
 yarn-error.*
 build-log*.txt
 metro-log.txt
+gradle-direct.txt
+gradle-*.txt
 
 # IDE / OS
 .idea/
