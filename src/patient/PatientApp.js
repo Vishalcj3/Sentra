@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import firestore from '@react-native-firebase/firestore';
 import storage from '@react-native-firebase/storage';
 import functions from '@react-native-firebase/functions';
@@ -25,8 +25,9 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
   const [appointments, setAppointments]     = useState([]);
   const [notifications, setNotifications]   = useState([]);
   const [scans, setScans]                   = useState([]);
+  const [bills, setBills]                   = useState([]);
+  const [claims, setClaims]                 = useState([]);
   const [toast, setToast]                   = useState(null);
-  const [activeConsent, setActiveConsent]   = useState(null);
   const [showNotifs, setShowNotifs]         = useState(false);
   const [providerMap, setProviderMap]       = useState({});
 
@@ -56,13 +57,21 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
         }, onErr('notifications')),
       firestore().collection('labScans').where('patientId','==',patientId).orderBy('createdAt','desc')
         .onSnapshot((snap) => { if (!snap) return; setScans(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); }, onErr('labScans')),
+      firestore().collection('bills').where('patientId','==',patientId)
+        .onSnapshot((snap) => { if (!snap) return; setBills(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); }, onErr('bills')),
+      firestore().collection('insuranceClaims').where('patientId','==',patientId)
+        .onSnapshot((snap) => { if (!snap) return; setClaims(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); }, onErr('claims')),
     ];
     return () => unsubs.forEach((u) => u());
   }, [patientId]);
 
-  // Resolve provider names/hospitals for any consents missing denormalized info
+  // Resolve provider names/hospitals for consents, prescriptions and bills
   useEffect(() => {
-    const ids = [...new Set(consents.map((c) => c.providerId).filter(Boolean))];
+    const ids = [...new Set([
+      ...consents.map((c) => c.providerId),
+      ...prescriptions.map((p) => p.providerId),
+      ...bills.map((b) => b.providerId),
+    ].filter(Boolean))];
     const missing = ids.filter((id) => !providerMap[id]);
     if (!missing.length) return;
     Promise.all(missing.map((id) => firestore().collection('providers').doc(id).get()))
@@ -72,7 +81,7 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
         if (Object.keys(add).length) setProviderMap((prev) => ({ ...prev, ...add }));
       })
       .catch(() => {});
-  }, [consents]);
+  }, [consents, prescriptions, bills]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 5000); };
 
@@ -122,6 +131,22 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
     } catch (e) { showToast('Error: ' + e.message); }
   };
 
+  const submitClaim = async (bill, scheme) => {
+    try {
+      await firestore().collection('insuranceClaims').add({
+        patientId,
+        billId: bill.id,
+        billNumber: bill.billNumber || null,
+        amount: bill.amount || 0,
+        orgName: bill.orgName || null,
+        scheme: scheme.name,
+        status: 'under_review',
+        submittedAt: firestore.FieldValue.serverTimestamp(),
+      });
+      showToast(`📨 Claim submitted to ${scheme.name} for review`);
+    } catch (e) { showToast('Claim failed: ' + e.message); }
+  };
+
   const now = Date.now();
   const isActive = (c) => c.approved && !c.revokedAt && (!c.expiresAt || (c.expiresAt.toDate ? c.expiresAt.toDate().getTime() : 0) > now);
   const pendingRequests = consents.filter((c) => !c.approved && !c.revokedAt);
@@ -129,7 +154,7 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
-  const sharedProps = { user, profile, patientId, prescriptions, consents, appointments, notifications, scans, providerMap, pendingRequests, activeAccess, onProfileUpdate, onSignOut, bookAppointment, approveConsent, denyConsent, revokeConsent, addAllergy, removeAllergy, showToast };
+  const sharedProps = { user, profile, patientId, prescriptions, consents, appointments, notifications, scans, bills, claims, providerMap, pendingRequests, activeAccess, onProfileUpdate, onSignOut, bookAppointment, approveConsent, denyConsent, revokeConsent, addAllergy, removeAllergy, submitClaim, showToast };
 
   const HomeScreen = () => (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -210,6 +235,18 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
         <PStack.Screen name="AccessControls" options={{ title: 'Live Access Controls' }}>
           {() => <AccessControlsScreen {...sharedProps} />}
         </PStack.Screen>
+        <PStack.Screen name="HospitalDetail" options={{ title: 'Hospital Records' }}>
+          {() => <HospitalDetailScreen {...sharedProps} />}
+        </PStack.Screen>
+        <PStack.Screen name="HospitalPrescriptions" options={{ title: 'Prescriptions' }}>
+          {() => <HospitalPrescriptionsScreen {...sharedProps} />}
+        </PStack.Screen>
+        <PStack.Screen name="HospitalBills" options={{ title: 'Bills' }}>
+          {() => <HospitalBillsScreen {...sharedProps} />}
+        </PStack.Screen>
+        <PStack.Screen name="ClaimInsurance" options={{ title: 'Claim Insurance' }}>
+          {() => <ClaimInsuranceScreen {...sharedProps} />}
+        </PStack.Screen>
       </PStack.Navigator>
 
       {/* Notifications modal (bell) */}
@@ -247,17 +284,37 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
 }
 
 /* ── VAULT TAB ─────────────────────────────────────────────── */
-function VaultTab({ profile, patientId, prescriptions, scans = [] }) {
+function VaultTab({ profile, patientId, prescriptions, bills = [], providerMap, scans = [] }) {
   const navigation = useNavigation();
   const allergies = profile?.allergies || [];
   const meds = profile?.currentMeds || [];
+  const name = profile?.name || 'Patient';
+  const age = ageFromDob(profile?.dob);
+
+  // Group history by hospital (from prescriptions' providers + bills)
+  const hospitals = {};
+  prescriptions.forEach((p) => {
+    const org = providerMap?.[p.providerId]?.orgName || 'Other';
+    (hospitals[org] = hospitals[org] || { name: org, rx: 0, bills: 0 }).rx++;
+  });
+  bills.forEach((b) => {
+    const org = b.orgName || 'Other';
+    (hospitals[org] = hospitals[org] || { name: org, rx: 0, bills: 0 }).bills++;
+  });
+  const hospitalList = Object.values(hospitals);
 
   return (
     <ScrollView style={s.screen} contentContainerStyle={{ paddingBottom: 32 }}>
-      <View style={[s.card, { backgroundColor: colors.indigoTint, borderColor: colors.indigo + '40' }]}>
-        <Text style={[s.cardSub, { color: colors.indigo, fontWeight: '700', marginBottom: 2 }]}>YOUR PATIENT ID</Text>
-        <Text style={{ fontSize: 22, fontWeight: '800', color: colors.indigo, letterSpacing: 1 }}>{patientId.slice(0, 10).toUpperCase()}</Text>
-        <Text style={[s.cardSub, { color: colors.indigo + 'CC' }]}>Share this ID with your doctor or lab to link records.</Text>
+      {/* Profile card: photo + name + age + ID */}
+      <View style={[s.card, { backgroundColor: colors.indigoTint, borderColor: colors.indigo + '40', flexDirection: 'row', alignItems: 'center' }]}>
+        <View style={[s.avatar, { backgroundColor: avatarColors(name)[0], width: 60, height: 60, borderRadius: 30 }]}>
+          <Text style={[s.avatarText, { fontSize: 22 }]}>{initials(name)}</Text>
+        </View>
+        <View style={{ flex: 1, marginLeft: 14 }}>
+          <Text style={{ fontSize: 18, fontWeight: '800', color: colors.indigo }}>{name}</Text>
+          <Text style={[s.cardSub, { color: colors.indigo + 'CC', marginBottom: 4 }]}>{age != null ? `${age} yrs` : 'Age —'}{profile?.dob ? ` · DOB ${profile.dob}` : ''}</Text>
+          <View style={s.idChip}><Text style={s.idChipText}>🆔 {patientId.slice(0, 10).toUpperCase()}</Text></View>
+        </View>
       </View>
 
       {/* Allergies — navigate to detail page */}
@@ -280,11 +337,25 @@ function VaultTab({ profile, patientId, prescriptions, scans = [] }) {
         <Text style={s.chevron}>›</Text>
       </TouchableOpacity>
 
-      <Text style={s.sectionLabel}>Prescription history</Text>
-      {prescriptions.length === 0
-        ? <View style={s.emptyState}><Text style={s.emptyIcon}>💊</Text><Text style={s.emptySub}>No prescriptions yet</Text></View>
-        : prescriptions.map((p) => <PrescriptionCard key={p.id} p={p} />)}
+      {/* History — hospital-wise cards */}
+      <Text style={s.sectionLabel}>🏥 History (by hospital)</Text>
+      {hospitalList.length === 0
+        ? <View style={s.emptyState}><Text style={s.emptyIcon}>🏥</Text><Text style={s.emptySub}>No records yet</Text></View>
+        : hospitalList.map((h) => (
+            <TouchableOpacity key={h.name} style={s.navCard} activeOpacity={0.8}
+              onPress={() => navigation.navigate('HospitalDetail', { hospital: h.name })}>
+              <View style={[s.avatar, { backgroundColor: avatarColors(h.name)[0], width: 44, height: 44, borderRadius: 12 }]}>
+                <Text style={[s.avatarText, { fontSize: 16 }]}>{initials(h.name)}</Text>
+              </View>
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={s.cardTitle}>{h.name}</Text>
+                <Text style={s.cardSub}>{h.rx} prescription(s) · {h.bills} bill(s)</Text>
+              </View>
+              <Text style={s.chevron}>›</Text>
+            </TouchableOpacity>
+          ))}
 
+      {/* Lab scans */}
       <Text style={s.sectionLabel}>🩻 Lab scans & results</Text>
       {scans.length === 0
         ? <View style={s.emptyState}><Text style={s.emptyIcon}>🩻</Text><Text style={s.emptySub}>No scans on record</Text></View>
@@ -424,6 +495,174 @@ function AccessControlsScreen({ activeAccess = [], providerMap, revokeConsent })
               </View>
             );
           })}
+    </ScrollView>
+  );
+}
+
+/* ── HOSPITAL DETAIL PAGE ──────────────────────────────────── */
+function HospitalDetailScreen({ prescriptions, bills = [], providerMap }) {
+  const navigation = useNavigation();
+  const { hospital } = useRoute().params || {};
+  const rxCount = prescriptions.filter((p) => (providerMap?.[p.providerId]?.orgName || 'Other') === hospital).length;
+  const hBills = bills.filter((b) => (b.orgName || 'Other') === hospital);
+  const totalDue = hBills.filter((b) => b.status !== 'paid').reduce((s, b) => s + Number(b.amount || 0), 0);
+
+  return (
+    <ScrollView style={s.screen} contentContainerStyle={{ paddingBottom: 32, paddingTop: 12 }}>
+      <View style={[s.card, { flexDirection: 'row', alignItems: 'center' }]}>
+        <View style={[s.avatar, { backgroundColor: avatarColors(hospital)[0], width: 48, height: 48, borderRadius: 12 }]}>
+          <Text style={[s.avatarText, { fontSize: 17 }]}>{initials(hospital)}</Text>
+        </View>
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={s.cardTitle}>{hospital}</Text>
+          <Text style={s.cardSub}>{rxCount} prescription(s) · {hBills.length} bill(s)</Text>
+        </View>
+      </View>
+
+      <TouchableOpacity style={s.navCard} activeOpacity={0.8} onPress={() => navigation.navigate('HospitalPrescriptions', { hospital })}>
+        <Text style={{ fontSize: 22 }}>💊</Text>
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={s.cardTitle}>Prescriptions</Text>
+          <Text style={s.cardSub}>{rxCount} record(s) from this hospital</Text>
+        </View>
+        <Text style={s.chevron}>›</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={s.navCard} activeOpacity={0.8} onPress={() => navigation.navigate('HospitalBills', { hospital })}>
+        <Text style={{ fontSize: 22 }}>🧾</Text>
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={s.cardTitle}>Bills</Text>
+          <Text style={s.cardSub}>{hBills.length} bill(s){totalDue > 0 ? ` · ${rupees(totalDue)} due` : ' · all settled'}</Text>
+        </View>
+        <Text style={s.chevron}>›</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={[s.navCard, { borderColor: colors.accent, borderWidth: 1.5 }]} activeOpacity={0.8} onPress={() => navigation.navigate('ClaimInsurance', { hospital })}>
+        <Text style={{ fontSize: 22 }}>🛡️</Text>
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={[s.cardTitle, { color: colors.accent }]}>Claim Insurance</Text>
+          <Text style={s.cardSub}>Select a bill, get the best scheme & submit</Text>
+        </View>
+        <Text style={s.chevron}>›</Text>
+      </TouchableOpacity>
+    </ScrollView>
+  );
+}
+
+/* ── HOSPITAL PRESCRIPTIONS PAGE ───────────────────────────── */
+function HospitalPrescriptionsScreen({ prescriptions, providerMap }) {
+  const { hospital } = useRoute().params || {};
+  const list = prescriptions.filter((p) => (providerMap?.[p.providerId]?.orgName || 'Other') === hospital);
+  return (
+    <ScrollView style={s.screen} contentContainerStyle={{ paddingBottom: 32, paddingTop: 12 }}>
+      <Text style={[s.cardSub, { marginBottom: 12 }]}>{hospital}</Text>
+      {list.length === 0
+        ? <View style={s.emptyState}><Text style={s.emptyIcon}>💊</Text><Text style={s.emptySub}>No prescriptions</Text></View>
+        : list.map((p) => <PrescriptionCard key={p.id} p={p} />)}
+    </ScrollView>
+  );
+}
+
+/* ── HOSPITAL BILLS PAGE ───────────────────────────────────── */
+function HospitalBillsScreen({ bills = [], claims = [] }) {
+  const navigation = useNavigation();
+  const { hospital } = useRoute().params || {};
+  const list = bills.filter((b) => (b.orgName || 'Other') === hospital);
+  const claimedBillIds = new Set(claims.map((c) => c.billId));
+  return (
+    <ScrollView style={s.screen} contentContainerStyle={{ paddingBottom: 32, paddingTop: 12 }}>
+      <Text style={[s.cardSub, { marginBottom: 12 }]}>{hospital}</Text>
+      {list.length === 0
+        ? <View style={s.emptyState}><Text style={s.emptyIcon}>🧾</Text><Text style={s.emptySub}>No bills</Text></View>
+        : list.map((b) => (
+            <View key={b.id} style={s.card}>
+              <View style={base.spaceBetween}>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.cardTitle}>{rupees(b.amount)}</Text>
+                  <Text style={s.cardSub}>{b.description}</Text>
+                  <Text style={s.listSub}>{b.billNumber} · {b.date?.toDate?.().toLocaleDateString() || ''}</Text>
+                </View>
+                <View style={[s.badge, b.status === 'paid' ? s.badgeClear : s.badgePending]}>
+                  <Text style={s.badgeText}>{b.status}</Text>
+                </View>
+              </View>
+              {claimedBillIds.has(b.id)
+                ? <View style={[s.purposeBox, { backgroundColor: colors.accentTint, marginTop: 10 }]}><Text style={[s.purposeText, { color: colors.accent }]}>🛡️ Insurance claim under review</Text></View>
+                : <TouchableOpacity style={[s.primaryBtn, { marginTop: 10 }]} onPress={() => navigation.navigate('ClaimInsurance', { hospital, billId: b.id })}>
+                    <Text style={s.primaryBtnText}>🛡️ Claim insurance for this bill</Text>
+                  </TouchableOpacity>}
+            </View>
+          ))}
+    </ScrollView>
+  );
+}
+
+/* ── CLAIM INSURANCE PAGE ──────────────────────────────────── */
+function ClaimInsuranceScreen({ bills = [], claims = [], submitClaim }) {
+  const route = useRoute();
+  const { hospital, billId } = route.params || {};
+  const list = bills.filter((b) => (b.orgName || 'Other') === hospital);
+  const [selected, setSelected] = useState(billId ? list.find((b) => b.id === billId) || null : null);
+  const claimedBillIds = new Set(claims.map((c) => c.billId));
+  const scheme = selected ? bestScheme(selected.amount) : null;
+  const [submitting, setSubmitting] = useState(false);
+
+  const doSubmit = async () => {
+    if (!selected || !scheme) return;
+    setSubmitting(true);
+    await submitClaim(selected, scheme);
+    setSubmitting(false);
+    setSelected(null);
+  };
+
+  return (
+    <ScrollView style={s.screen} contentContainerStyle={{ paddingBottom: 32, paddingTop: 12 }}>
+      {/* Step 1: select a bill */}
+      <Text style={s.sectionLabel}>1 · Select a bill</Text>
+      {list.length === 0
+        ? <View style={s.emptyState}><Text style={s.emptyIcon}>🧾</Text><Text style={s.emptySub}>No bills to claim</Text></View>
+        : list.map((b) => {
+            const isSel = selected?.id === b.id;
+            const claimed = claimedBillIds.has(b.id);
+            return (
+              <TouchableOpacity key={b.id} disabled={claimed}
+                style={[s.card, isSel && { borderColor: colors.primary, borderWidth: 1.5, backgroundColor: colors.primaryTint }, claimed && { opacity: 0.5 }]}
+                onPress={() => setSelected(b)}>
+                <View style={base.spaceBetween}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.cardTitle}>{rupees(b.amount)}</Text>
+                    <Text style={s.cardSub}>{b.description}</Text>
+                    <Text style={s.listSub}>{b.billNumber}</Text>
+                  </View>
+                  {claimed
+                    ? <View style={[s.badge, s.badgeClear]}><Text style={s.badgeText}>claimed</Text></View>
+                    : <View style={[s.radio, isSel && s.radioOn]}>{isSel && <Text style={s.radioDot}>●</Text>}</View>}
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+
+      {/* Step 2: best scheme suggested */}
+      {selected && scheme && (
+        <>
+          <Text style={s.sectionLabel}>2 · Best scheme suggested</Text>
+          <View style={[s.card, { borderColor: colors.accent, borderWidth: 1.5, backgroundColor: colors.accentTint }]}>
+            <View style={base.spaceBetween}>
+              <Text style={[s.cardTitle, { color: colors.accent }]}>⭐ {scheme.name}</Text>
+              <Text style={[s.badgeText, { color: colors.accent }]}>{scheme.type}</Text>
+            </View>
+            <Text style={[s.cardSub, { marginTop: 4 }]}>Cover up to {rupees(scheme.cover)}</Text>
+            <Text style={[s.listSub, { marginTop: 6 }]}>{scheme.reason}</Text>
+            <Text style={[s.listSub, { marginTop: 2 }]}>{scheme.note}</Text>
+          </View>
+
+          {/* Step 3: submit */}
+          <Text style={s.sectionLabel}>3 · Submit for review</Text>
+          <TouchableOpacity style={[s.primaryBtn, submitting && { opacity: 0.6 }]} onPress={doSubmit} disabled={submitting}>
+            {submitting ? <ActivityIndicator color="#fff" /> : <Text style={s.primaryBtnText}>📨 Submit claim for review</Text>}
+          </TouchableOpacity>
+        </>
+      )}
     </ScrollView>
   );
 }
@@ -610,6 +849,38 @@ function AppointmentsTab({ patientId, appointments, bookAppointment }) {
           ))}
     </ScrollView>
   );
+}
+
+/* ── helpers: age, money, insurance ────────────────────────── */
+function ageFromDob(dob) {
+  if (!dob) return null;
+  let d;
+  if (/^\d{4}-\d{2}-\d{2}/.test(dob)) d = new Date(dob);           // ISO
+  else if (/^\d{2}\/\d{2}\/\d{4}$/.test(dob)) {                    // DD/MM/YYYY
+    const [dd, mm, yy] = dob.split('/'); d = new Date(`${yy}-${mm}-${dd}`);
+  } else d = new Date(dob);
+  if (isNaN(d.getTime())) return null;
+  const now = new Date();
+  let age = now.getFullYear() - d.getFullYear();
+  const m = now.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+  return age >= 0 && age < 130 ? age : null;
+}
+function rupees(n) { return '₹' + Number(n || 0).toLocaleString('en-IN'); }
+
+const INSURANCE_SCHEMES = [
+  { name: 'Ayushman Bharat (PM-JAY)', cover: 500000, type: 'Government · cashless', note: 'Free secondary & tertiary care for eligible families.' },
+  { name: 'CGHS', cover: 300000, type: 'Government employees', note: 'Covers serving & retired central govt employees.' },
+  { name: 'Star Health Comprehensive', cover: 1000000, type: 'Private', note: 'Wide hospital network, no room-rent cap.' },
+  { name: 'HDFC ERGO Optima Secure', cover: 1500000, type: 'Private · premium', note: 'High cover with restore & no-claim bonus.' },
+];
+// Pick the lowest-cost adequate scheme that covers the bill amount.
+function bestScheme(amount) {
+  const amt = Number(amount || 0);
+  const govt = INSURANCE_SCHEMES.find((sc) => sc.type.startsWith('Government') && sc.cover >= amt);
+  if (govt) return { ...govt, reason: `Fully covers ${rupees(amt)} at no premium (government cashless).` };
+  const any = INSURANCE_SCHEMES.find((sc) => sc.cover >= amt) || INSURANCE_SCHEMES[INSURANCE_SCHEMES.length - 1];
+  return { ...any, reason: `Best coverage for ${rupees(amt)} among your available plans.` };
 }
 
 /* ── helpers: provider display + access timing ─────────────── */
@@ -813,6 +1084,11 @@ const s = StyleSheet.create({
   tagRemove: { color: '#B91C1C', fontSize: 12, fontWeight: '800' },
   chevron: { fontSize: 22, color: colors.textMuted, fontWeight: '300' },
   navCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, borderRadius: radius.md, padding: 16, marginBottom: 10, borderWidth: 1, borderColor: colors.border, ...shadow.sm },
+  idChip: { alignSelf: 'flex-start', backgroundColor: 'rgba(79,70,229,.15)', borderRadius: 100, paddingHorizontal: 10, paddingVertical: 4 },
+  idChipText: { fontSize: 12, fontWeight: '800', color: colors.indigo, letterSpacing: 0.5 },
+  radio: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+  radioOn: { borderColor: colors.primary },
+  radioDot: { color: colors.primary, fontSize: 12 },
   input: { backgroundColor: colors.surface, borderWidth: 1.5, borderColor: colors.border, borderRadius: radius.sm, paddingHorizontal: 14, paddingVertical: 11, fontSize: 14, color: colors.text },
   searchRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   addCircleBtn: { width: 44, height: 44, borderRadius: radius.sm, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
