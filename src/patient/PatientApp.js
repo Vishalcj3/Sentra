@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, SafeAreaView,
-  ScrollView, FlatList, TextInput, ActivityIndicator, Alert,
+  ScrollView, FlatList, TextInput, ActivityIndicator, Alert, Modal,
 } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { useNavigation } from '@react-navigation/native';
 import firestore from '@react-native-firebase/firestore';
 import storage from '@react-native-firebase/storage';
 import functions from '@react-native-firebase/functions';
@@ -11,6 +13,7 @@ import { colors, radius, shadow, avatarColors, initials, base } from '../styles/
 import { decryptPrescription } from '../crypto';
 
 const Tab = createBottomTabNavigator();
+const PStack = createNativeStackNavigator();
 const bookApptFn = functions().httpsCallable('bookAppointment');
 
 // ── Shared context via props drilling (small app, no context needed) ──────────
@@ -24,6 +27,8 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
   const [scans, setScans]                   = useState([]);
   const [toast, setToast]                   = useState(null);
   const [activeConsent, setActiveConsent]   = useState(null);
+  const [showNotifs, setShowNotifs]         = useState(false);
+  const [providerMap, setProviderMap]       = useState({});
 
   useEffect(() => {
     const onErr = (label) => (e) => console.warn(`[${label}] listener error:`, e?.message || e);
@@ -38,7 +43,7 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
           }));
           setPrescriptions(list);
         }, onErr('prescriptions')),
-      firestore().collection('consents').where('patientId','==',patientId).where('approved','==',false)
+      firestore().collection('consents').where('patientId','==',patientId)
         .onSnapshot((snap) => { if (!snap) return; setConsents(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); }, onErr('consents')),
       firestore().collection('appointments').where('patientId','==',patientId).orderBy('scheduledAt','desc')
         .onSnapshot((snap) => { if (!snap) return; setAppointments(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); }, onErr('appointments')),
@@ -55,6 +60,20 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
     return () => unsubs.forEach((u) => u());
   }, [patientId]);
 
+  // Resolve provider names/hospitals for any consents missing denormalized info
+  useEffect(() => {
+    const ids = [...new Set(consents.map((c) => c.providerId).filter(Boolean))];
+    const missing = ids.filter((id) => !providerMap[id]);
+    if (!missing.length) return;
+    Promise.all(missing.map((id) => firestore().collection('providers').doc(id).get()))
+      .then((snaps) => {
+        const add = {};
+        snaps.forEach((sn) => { if (sn.exists) add[sn.id] = sn.data(); });
+        if (Object.keys(add).length) setProviderMap((prev) => ({ ...prev, ...add }));
+      })
+      .catch(() => {});
+  }, [consents]);
+
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 5000); };
 
   const bookAppointment = async (providerId, when) => {
@@ -66,11 +85,53 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
     }
   };
 
+  const approveConsent = async (c) => {
+    try {
+      await firestore().collection('consents').doc(c.id).update({ approved: true, approvedAt: firestore.FieldValue.serverTimestamp() });
+      showToast('✓ Access granted');
+    } catch (e) { showToast('Error: ' + e.message); }
+  };
+  const denyConsent = async (c) => {
+    try {
+      await firestore().collection('consents').doc(c.id).update({ revokedAt: firestore.FieldValue.serverTimestamp() });
+      showToast('Request denied');
+    } catch (e) { showToast('Error: ' + e.message); }
+  };
+  const revokeConsent = async (c) => {
+    try {
+      await firestore().collection('consents').doc(c.id).update({ approved: false, revokedAt: firestore.FieldValue.serverTimestamp() });
+      showToast('🔒 Access revoked');
+    } catch (e) { showToast('Error: ' + e.message); }
+  };
+
+  const addAllergy = async (text) => {
+    const v = text.trim();
+    if (!v) return;
+    const next = [...(profile?.allergies || []), v];
+    try {
+      await firestore().collection('patients').doc(patientId).update({ allergies: next });
+      onProfileUpdate({ allergies: next });
+      showToast(`Added allergy: ${v}`);
+    } catch (e) { showToast('Error: ' + e.message); }
+  };
+  const removeAllergy = async (text) => {
+    const next = (profile?.allergies || []).filter((a) => a !== text);
+    try {
+      await firestore().collection('patients').doc(patientId).update({ allergies: next });
+      onProfileUpdate({ allergies: next });
+    } catch (e) { showToast('Error: ' + e.message); }
+  };
+
+  const now = Date.now();
+  const isActive = (c) => c.approved && !c.revokedAt && (!c.expiresAt || (c.expiresAt.toDate ? c.expiresAt.toDate().getTime() : 0) > now);
+  const pendingRequests = consents.filter((c) => !c.approved && !c.revokedAt);
+  const activeAccess = consents.filter(isActive);
+
   const unreadCount = notifications.filter((n) => !n.read).length;
 
-  const sharedProps = { user, profile, patientId, prescriptions, consents, appointments, notifications, scans, onProfileUpdate, onSignOut, bookAppointment, openConsent: setActiveConsent, showToast };
+  const sharedProps = { user, profile, patientId, prescriptions, consents, appointments, notifications, scans, providerMap, pendingRequests, activeAccess, onProfileUpdate, onSignOut, bookAppointment, approveConsent, denyConsent, revokeConsent, addAllergy, removeAllergy, showToast };
 
-  return (
+  const HomeScreen = () => (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
       {/* Gradient topbar */}
       <View style={s.topbar}>
@@ -82,9 +143,18 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
           </View>
           <Text style={s.idText}>🆔 {patientId.slice(0, 10).toUpperCase()}</Text>
         </View>
-        <TouchableOpacity style={s.signOutBtn} onPress={onSignOut}>
-          <Text style={s.signOutText}>Sign out</Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          {/* Notification bell */}
+          <TouchableOpacity style={s.bellBtn} onPress={() => setShowNotifs(true)}>
+            <Text style={{ fontSize: 20 }}>🔔</Text>
+            {unreadCount > 0 && (
+              <View style={s.bellBadge}><Text style={s.bellBadgeText}>{unreadCount}</Text></View>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity style={s.signOutBtn} onPress={onSignOut}>
+            <Text style={s.signOutText}>Sign out</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <Tab.Navigator
@@ -104,28 +174,84 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
           {() => <AppointmentsTab {...sharedProps} />}
         </Tab.Screen>
         <Tab.Screen
-          name="Alerts"
+          name="Requests"
           options={{
-            tabBarIcon: () => <Text style={{ fontSize: 18 }}>🔔</Text>,
-            tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
+            tabBarIcon: () => <Text style={{ fontSize: 18 }}>📨</Text>,
+            tabBarBadge: pendingRequests.length > 0 ? pendingRequests.length : undefined,
           }}
         >
-          {() => <AlertsTab {...sharedProps} />}
+          {() => <RequestsTab {...sharedProps} />}
         </Tab.Screen>
         <Tab.Screen name="Security" options={{ tabBarIcon: () => <Text style={{ fontSize: 18 }}>🔐</Text> }}>
           {() => <SecurityTab {...sharedProps} />}
         </Tab.Screen>
       </Tab.Navigator>
+    </SafeAreaView>
+  );
+
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <PStack.Navigator
+        screenOptions={{
+          headerStyle: { backgroundColor: '#0C4A6E' },
+          headerTintColor: '#fff',
+          headerTitleStyle: { fontWeight: '700' },
+        }}
+      >
+        <PStack.Screen name="PatientHome" options={{ headerShown: false }}>
+          {() => HomeScreen()}
+        </PStack.Screen>
+        <PStack.Screen name="Medications" options={{ title: 'Current Medications' }}>
+          {() => <MedicationsScreen {...sharedProps} />}
+        </PStack.Screen>
+        <PStack.Screen name="Allergies" options={{ title: 'Allergies' }}>
+          {() => <AllergiesScreen {...sharedProps} />}
+        </PStack.Screen>
+        <PStack.Screen name="AccessControls" options={{ title: 'Live Access Controls' }}>
+          {() => <AccessControlsScreen {...sharedProps} />}
+        </PStack.Screen>
+      </PStack.Navigator>
+
+      {/* Notifications modal (bell) */}
+      <Modal visible={showNotifs} animationType="slide" transparent onRequestClose={() => setShowNotifs(false)}>
+        <View style={s.modalOverlay}>
+          <View style={s.modalSheet}>
+            <View style={s.modalHeader}>
+              <Text style={s.modalTitle}>🔔 Notifications</Text>
+              <TouchableOpacity onPress={() => setShowNotifs(false)}><Text style={s.modalClose}>✕</Text></TouchableOpacity>
+            </View>
+            <ScrollView style={{ maxHeight: 460 }}>
+              {notifications.length === 0
+                ? <View style={s.emptyState}><Text style={s.emptyIcon}>🔔</Text><Text style={s.emptySub}>No reminders yet</Text></View>
+                : notifications.map((n) => (
+                    <TouchableOpacity key={n.id} style={[s.notifRow, !n.read && { backgroundColor: colors.primaryTint }]}
+                      onPress={() => !n.read && firestore().collection('notifications').doc(n.id).update({ read: true })}>
+                      <Text style={{ fontSize: 20 }}>{n.type === 'safety_alert' ? '⚠️' : n.type === 'token_reminder' ? '🏥' : '💊'}</Text>
+                      <View style={{ flex: 1, marginLeft: 10 }}>
+                        <Text style={s.listTitle}>{n.message}</Text>
+                        <Text style={s.listSub}>{n.createdAt?.toDate?.().toLocaleString() || ''}</Text>
+                      </View>
+                      {!n.read && <View style={s.unreadDot} />}
+                    </TouchableOpacity>
+                  ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       {!!toast && (
         <View style={s.toast}><Text style={s.toastText}>{toast}</Text></View>
       )}
-    </SafeAreaView>
+    </View>
   );
 }
 
 /* ── VAULT TAB ─────────────────────────────────────────────── */
-function VaultTab({ profile, patientId, prescriptions, consents, scans = [], openConsent }) {
+function VaultTab({ profile, patientId, prescriptions, scans = [] }) {
+  const navigation = useNavigation();
+  const allergies = profile?.allergies || [];
+  const meds = profile?.currentMeds || [];
+
   return (
     <ScrollView style={s.screen} contentContainerStyle={{ paddingBottom: 32 }}>
       <View style={[s.card, { backgroundColor: colors.indigoTint, borderColor: colors.indigo + '40' }]}>
@@ -134,39 +260,25 @@ function VaultTab({ profile, patientId, prescriptions, consents, scans = [], ope
         <Text style={[s.cardSub, { color: colors.indigo + 'CC' }]}>Share this ID with your doctor or lab to link records.</Text>
       </View>
 
-      {consents.length > 0 && (
-        <View style={[s.card, { borderColor: '#F59E0B', backgroundColor: '#FFFBEB' }]}>
-          <Text style={[s.cardTitle, { color: '#92400E' }]}>⚠ {consents.length} access request(s) waiting</Text>
-          <Text style={[s.cardSub, { color: '#B45309' }]}>Your signature or PIN is required.</Text>
-          {consents.map((c) => (
-            <View key={c.id} style={s.listRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={s.listTitle}>{c.scope?.replace(/_/g, ' ') || 'Record access'}</Text>
-                <Text style={s.listSub}>Provider: {c.providerId?.slice(0, 8)}…</Text>
-              </View>
-              <TouchableOpacity style={s.primarySmBtn} onPress={() => openConsent(c)}>
-                <Text style={s.primarySmBtnText}>Review →</Text>
-              </TouchableOpacity>
-            </View>
-          ))}
+      {/* Allergies — navigate to detail page */}
+      <TouchableOpacity style={s.navCard} activeOpacity={0.8} onPress={() => navigation.navigate('Allergies')}>
+        <Text style={{ fontSize: 22 }}>🧬</Text>
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={s.cardTitle}>Allergies</Text>
+          <Text style={s.cardSub}>{allergies.length ? allergies.join(', ') : 'None recorded — tap to add'}</Text>
         </View>
-      )}
+        <Text style={s.chevron}>›</Text>
+      </TouchableOpacity>
 
-      <View style={s.card}>
-        <Text style={s.cardTitle}>🧬 Allergies</Text>
-        <View style={s.tagRow}>
-          {profile?.allergies?.length
-            ? profile.allergies.map((a) => <View key={a} style={s.tagDanger}><Text style={s.tagDangerText}>{a}</Text></View>)
-            : <Text style={s.cardSub}>None recorded</Text>}
+      {/* Current medications — navigate to detail page */}
+      <TouchableOpacity style={s.navCard} activeOpacity={0.8} onPress={() => navigation.navigate('Medications')}>
+        <Text style={{ fontSize: 22 }}>💊</Text>
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={s.cardTitle}>Current medications</Text>
+          <Text style={s.cardSub}>{meds.length ? `${meds.length} active — tap for schedule` : 'None recorded'}</Text>
         </View>
-      </View>
-
-      <View style={s.card}>
-        <Text style={s.cardTitle}>💊 Current medications</Text>
-        {profile?.currentMeds?.length
-          ? profile.currentMeds.map((m) => <Text key={m} style={s.listTitle}>{m}</Text>)
-          : <Text style={s.cardSub}>None recorded</Text>}
-      </View>
+        <Text style={s.chevron}>›</Text>
+      </TouchableOpacity>
 
       <Text style={s.sectionLabel}>Prescription history</Text>
       {prescriptions.length === 0
@@ -188,6 +300,127 @@ function VaultTab({ profile, patientId, prescriptions, consents, scans = [], ope
                   <View style={[s.badge, { backgroundColor: c + '22' }]}><Text style={[s.badgeText, { color: c }]}>{sc.status}</Text></View>
                 </View>
                 {!!sc.findings && <View style={s.reasoningBlock}><Text style={s.reasoningText}>{sc.findings}</Text></View>}
+              </View>
+            );
+          })}
+    </ScrollView>
+  );
+}
+
+/* ── MEDICATION DETAIL ─────────────────────────────────────── */
+function MedDetail({ m }) {
+  // Support legacy string meds and structured objects
+  if (typeof m === 'string') {
+    return <View style={s.medCard}><Text style={s.medName}>{m}</Text></View>;
+  }
+  const slots = [
+    ['🌅', 'Morning', m.morning],
+    ['☀️', 'Afternoon', m.afternoon],
+    ['🌙', 'Night', m.night],
+  ];
+  return (
+    <View style={s.medCard}>
+      <View style={base.spaceBetween}>
+        <Text style={s.medName}>{m.name}{m.dosage ? ` · ${m.dosage}` : ''}</Text>
+        {!!m.quantity && <Text style={s.medQty}>{m.quantity}</Text>}
+      </View>
+      <View style={s.timingRow}>
+        {slots.map(([icon, label, on]) => (
+          <View key={label} style={[s.timingChip, on ? s.timingOn : s.timingOff]}>
+            <Text style={[s.timingText, on ? { color: '#fff' } : { color: colors.textMuted }]}>{icon} {label}</Text>
+          </View>
+        ))}
+      </View>
+      {!!m.purpose && <Text style={s.medPurpose}>📋 {m.purpose}</Text>}
+    </View>
+  );
+}
+
+/* ── MEDICATIONS DETAIL PAGE ───────────────────────────────── */
+function MedicationsScreen({ profile }) {
+  const meds = profile?.currentMeds || [];
+  return (
+    <ScrollView style={s.screen} contentContainerStyle={{ paddingBottom: 32, paddingTop: 12 }}>
+      <Text style={[s.cardSub, { marginBottom: 12 }]}>Your active medications with dosing schedule.</Text>
+      {meds.length === 0
+        ? <View style={s.emptyState}><Text style={s.emptyIcon}>💊</Text><Text style={s.emptySub}>No medications recorded</Text></View>
+        : meds.map((m, i) => <MedDetail key={i} m={m} />)}
+    </ScrollView>
+  );
+}
+
+/* ── ALLERGIES DETAIL PAGE ─────────────────────────────────── */
+function AllergiesScreen({ profile, addAllergy, removeAllergy }) {
+  const [newAllergy, setNewAllergy] = useState('');
+  const allergies = profile?.allergies || [];
+  const submit = () => { if (newAllergy.trim()) { addAllergy(newAllergy); setNewAllergy(''); } };
+  return (
+    <ScrollView style={s.screen} contentContainerStyle={{ paddingBottom: 32, paddingTop: 12 }} keyboardShouldPersistTaps="handled">
+      <Text style={[s.cardSub, { marginBottom: 12 }]}>Allergies on your record. Add or remove at any time.</Text>
+
+      <View style={s.card}>
+        <Text style={s.sectionLabel}>Current allergies</Text>
+        <View style={s.tagRow}>
+          {allergies.length
+            ? allergies.map((a) => (
+                <View key={a} style={s.tagDanger}>
+                  <Text style={s.tagDangerText}>{a}</Text>
+                  <TouchableOpacity onPress={() => removeAllergy(a)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Text style={s.tagRemove}> ✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ))
+            : <Text style={s.cardSub}>None recorded yet</Text>}
+        </View>
+      </View>
+
+      <Text style={s.sectionLabel}>Add new allergy</Text>
+      <View style={s.searchRow}>
+        <TextInput
+          style={[s.input, { flex: 1 }]}
+          value={newAllergy}
+          onChangeText={setNewAllergy}
+          onSubmitEditing={submit}
+          placeholder="e.g. Ibuprofen, Peanuts…"
+          placeholderTextColor={colors.textMuted}
+          returnKeyType="done"
+        />
+        <TouchableOpacity style={s.addCircleBtn} onPress={submit}>
+          <Text style={s.addCircleText}>＋</Text>
+        </TouchableOpacity>
+      </View>
+    </ScrollView>
+  );
+}
+
+/* ── ACCESS CONTROLS DETAIL PAGE ───────────────────────────── */
+function AccessControlsScreen({ activeAccess = [], providerMap, revokeConsent }) {
+  return (
+    <ScrollView style={s.screen} contentContainerStyle={{ paddingBottom: 32, paddingTop: 12 }}>
+      <Text style={[s.cardSub, { marginBottom: 12 }]}>Providers who currently have access to your records. Revoke any at any time.</Text>
+      {activeAccess.length === 0
+        ? <View style={s.emptyState}><Text style={s.emptyIcon}>🔒</Text><Text style={s.emptySub}>No one currently has access</Text></View>
+        : activeAccess.map((c) => {
+            const d = provDisplay(c, providerMap);
+            const exp = expiryLabel(c);
+            return (
+              <View key={c.id} style={[s.card, c.emergency && { borderColor: colors.danger, borderWidth: 1.5 }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <View style={[s.avatar, { backgroundColor: avatarColors(d.name)[0], width: 44, height: 44, borderRadius: 22 }]}>
+                    <Text style={[s.avatarText, { fontSize: 15 }]}>{initials(d.name)}</Text>
+                  </View>
+                  <View style={{ flex: 1, marginLeft: 10 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={s.cardTitle}>{d.name}</Text>
+                      {c.emergency && <View style={s.emergencyTag}><Text style={s.emergencyTagText}>🚨 EMERGENCY</Text></View>}
+                    </View>
+                    <Text style={s.cardSub}>🏥 {d.org}</Text>
+                    <Text style={s.listSub}>{purposeOf(c)}{exp ? ` · ${exp}` : ' · permanent'}</Text>
+                  </View>
+                </View>
+                <TouchableOpacity style={s.revokeBtn} onPress={() => revokeConsent(c)}>
+                  <Text style={s.revokeBtnText}>🔒 Revoke access</Text>
+                </TouchableOpacity>
               </View>
             );
           })}
@@ -379,35 +612,104 @@ function AppointmentsTab({ patientId, appointments, bookAppointment }) {
   );
 }
 
-/* ── ALERTS TAB ────────────────────────────────────────────── */
-function AlertsTab({ notifications }) {
-  const markRead = (id) => firestore().collection('notifications').doc(id).update({ read: true });
+/* ── helpers: provider display + access timing ─────────────── */
+function provDisplay(c, providerMap) {
+  const p = providerMap?.[c.providerId] || {};
+  return {
+    name: c.providerName || p.name || `Provider ${c.providerId?.slice(0, 6)}`,
+    org: c.orgName || p.orgName || 'Unknown hospital',
+    specialty: c.specialty || p.specialty || '',
+  };
+}
+function purposeOf(c) { return c.purpose || c.scope?.replace(/_/g, ' ') || 'Record access'; }
+function timeAgo(ts) {
+  const d = ts?.toDate?.(); if (!d) return '';
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1440) return `${Math.floor(mins / 60)}h ago`;
+  return d.toLocaleDateString();
+}
+function expiryLabel(c) {
+  const d = c.expiresAt?.toDate?.(); if (!d) return null;
+  const mins = Math.floor((d.getTime() - Date.now()) / 60000);
+  if (mins <= 0) return 'expired';
+  if (mins < 60) return `expires in ${mins}m`;
+  return `expires in ${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+/* ── REQUESTS TAB ──────────────────────────────────────────── */
+function RequestsTab({ pendingRequests, consents, providerMap, approveConsent, denyConsent }) {
+  const handled = consents.filter((c) => c.approved || c.revokedAt);
   return (
     <ScrollView style={s.screen} contentContainerStyle={{ paddingBottom: 32 }}>
-      <Text style={s.sectionLabel}>Notifications</Text>
-      {notifications.length === 0
-        ? <View style={s.emptyState}><Text style={s.emptyIcon}>🔔</Text><Text style={s.emptySub}>No notifications yet</Text></View>
-        : notifications.map((n) => (
-            <TouchableOpacity key={n.id} style={[s.card, !n.read && { borderColor: colors.primary, backgroundColor: colors.primaryTint }]} onPress={() => !n.read && markRead(n.id)}>
-              <View style={{ flexDirection: 'row', gap: 10 }}>
-                <Text style={{ fontSize: 20 }}>{n.type === 'safety_alert' ? '⚠️' : n.type === 'token_reminder' ? '🏥' : '💊'}</Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.listTitle}>{n.message}</Text>
-                  <Text style={[s.listSub, { marginTop: 4 }]}>{n.createdAt?.toDate?.().toLocaleTimeString()}</Text>
+      <Text style={s.sectionLabel}>Pending access requests</Text>
+      {pendingRequests.length === 0
+        ? <View style={s.emptyState}><Text style={s.emptyIcon}>📨</Text><Text style={s.emptySub}>No pending requests</Text></View>
+        : pendingRequests.map((c) => {
+            const d = provDisplay(c, providerMap);
+            return (
+              <View key={c.id} style={[s.card, { borderColor: '#F59E0B', backgroundColor: '#FFFBEB' }]}>
+                <View style={base.spaceBetween}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.cardTitle}>{d.name}</Text>
+                    <Text style={s.cardSub}>{d.org}{d.specialty ? ` · ${d.specialty}` : ''}</Text>
+                  </View>
+                  <Text style={s.listSub}>{timeAgo(c.createdAt)}</Text>
                 </View>
-                {!n.read && <View style={[s.badge, s.badgeInfo]}><Text style={s.badgeText}>New</Text></View>}
+                <View style={s.purposeBox}><Text style={s.purposeText}>📋 {purposeOf(c)}</Text></View>
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                  <TouchableOpacity style={[s.primaryBtn, { flex: 1 }]} onPress={() => approveConsent(c)}>
+                    <Text style={s.primaryBtnText}>✓ Approve</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[s.denyBtn, { flex: 1 }]} onPress={() => denyConsent(c)}>
+                    <Text style={s.denyBtnText}>✕ Deny</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
-            </TouchableOpacity>
-          ))}
+            );
+          })}
+
+      <Text style={s.sectionLabel}>Request history</Text>
+      {handled.length === 0
+        ? <Text style={s.cardSub}>No past requests</Text>
+        : handled.map((c) => {
+            const d = provDisplay(c, providerMap);
+            const granted = c.approved && !c.revokedAt;
+            return (
+              <View key={c.id} style={s.card}>
+                <View style={base.spaceBetween}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.listTitle}>{d.name}</Text>
+                    <Text style={s.listSub}>{purposeOf(c)} · {d.org}</Text>
+                  </View>
+                  <View style={[s.badge, granted ? s.badgeClear : s.badgeDanger]}>
+                    <Text style={s.badgeText}>{c.revokedAt ? (c.approved ? 'revoked' : 'denied') : 'granted'}</Text>
+                  </View>
+                </View>
+              </View>
+            );
+          })}
     </ScrollView>
   );
 }
 
 /* ── SECURITY TAB ──────────────────────────────────────────── */
-function SecurityTab({ profile, patientId, onProfileUpdate }) {
-  const [view, setView] = useState('home');
+function SecurityTab({ profile, patientId, activeAccess = [] }) {
+  const navigation = useNavigation();
   return (
     <ScrollView style={s.screen} contentContainerStyle={{ paddingBottom: 32 }}>
+      {/* Live access controls — navigate to detail page */}
+      <Text style={s.sectionLabel}>Privacy & access</Text>
+      <TouchableOpacity style={s.navCard} activeOpacity={0.8} onPress={() => navigation.navigate('AccessControls')}>
+        <Text style={{ fontSize: 22 }}>🛡️</Text>
+        <View style={{ flex: 1, marginLeft: 12 }}>
+          <Text style={s.cardTitle}>Live access controls</Text>
+          <Text style={s.cardSub}>{activeAccess.length} provider(s) currently have access — tap to manage</Text>
+        </View>
+        <Text style={s.chevron}>›</Text>
+      </TouchableOpacity>
+
       <Text style={s.sectionLabel}>Identity verification</Text>
       <Text style={[s.cardSub, { marginBottom: 16 }]}>Your signature and PIN are used to approve provider access requests.</Text>
 
@@ -474,6 +776,24 @@ const s = StyleSheet.create({
   topbarRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
   topbarSub: { fontSize: 11, color: 'rgba(255,255,255,.6)' },
   idText: { fontSize: 11, color: 'rgba(255,255,255,.85)', fontWeight: '700', marginTop: 4, letterSpacing: 0.5 },
+  bellBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,.12)', alignItems: 'center', justifyContent: 'center' },
+  bellBadge: { position: 'absolute', top: 2, right: 2, minWidth: 16, height: 16, borderRadius: 8, backgroundColor: colors.danger, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3 },
+  bellBadgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,.45)', justifyContent: 'flex-end' },
+  modalSheet: { backgroundColor: colors.bg, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, paddingBottom: 32 },
+  modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, paddingTop: 4 },
+  modalTitle: { fontSize: 18, fontWeight: '700', color: colors.text },
+  modalClose: { fontSize: 20, color: colors.textMuted, paddingHorizontal: 8 },
+  notifRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, borderRadius: radius.md, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: colors.border },
+  unreadDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary },
+  purposeBox: { marginTop: 10, backgroundColor: 'rgba(255,255,255,.6)', borderRadius: radius.sm, padding: 10 },
+  purposeText: { fontSize: 13, color: '#92400E', fontWeight: '600' },
+  denyBtn: { borderWidth: 1.5, borderColor: colors.danger, borderRadius: radius.sm, paddingVertical: 12, alignItems: 'center' },
+  denyBtnText: { color: colors.danger, fontSize: 14, fontWeight: '700' },
+  emergencyTag: { backgroundColor: colors.dangerTint, borderRadius: 100, paddingHorizontal: 6, paddingVertical: 2 },
+  emergencyTagText: { fontSize: 8, fontWeight: '800', color: colors.danger },
+  revokeBtn: { marginTop: 12, borderWidth: 1.5, borderColor: colors.danger, borderRadius: radius.sm, paddingVertical: 11, alignItems: 'center' },
+  revokeBtnText: { color: colors.danger, fontSize: 13, fontWeight: '700' },
   rolePill: { backgroundColor: 'rgba(255,255,255,.15)', borderRadius: 100, paddingHorizontal: 8, paddingVertical: 2 },
   rolePillText: { fontSize: 10, fontWeight: '700', color: 'rgba(255,255,255,.9)', letterSpacing: 0.5 },
   signOutBtn: { borderWidth: 1, borderColor: 'rgba(255,255,255,.2)', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 },
@@ -489,7 +809,24 @@ const s = StyleSheet.create({
   listTitle: { fontSize: 13, fontWeight: '600', color: colors.text },
   listSub: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
   tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
-  tagDanger: { backgroundColor: colors.dangerTint, borderRadius: 100, paddingHorizontal: 10, paddingVertical: 4 },
+  tagDanger: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.dangerTint, borderRadius: 100, paddingHorizontal: 10, paddingVertical: 5 },
+  tagRemove: { color: '#B91C1C', fontSize: 12, fontWeight: '800' },
+  chevron: { fontSize: 22, color: colors.textMuted, fontWeight: '300' },
+  navCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, borderRadius: radius.md, padding: 16, marginBottom: 10, borderWidth: 1, borderColor: colors.border, ...shadow.sm },
+  input: { backgroundColor: colors.surface, borderWidth: 1.5, borderColor: colors.border, borderRadius: radius.sm, paddingHorizontal: 14, paddingVertical: 11, fontSize: 14, color: colors.text },
+  searchRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
+  addCircleBtn: { width: 44, height: 44, borderRadius: radius.sm, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
+  addCircleText: { color: '#fff', fontSize: 22, fontWeight: '700', marginTop: -2 },
+  medCard: { backgroundColor: colors.bg, borderRadius: radius.sm, padding: 12, marginBottom: 8, borderWidth: 1, borderColor: colors.border },
+  medName: { fontSize: 14, fontWeight: '700', color: colors.text },
+  medQty: { fontSize: 12, fontWeight: '600', color: colors.primary },
+  timingRow: { flexDirection: 'row', gap: 6, marginTop: 8 },
+  timingChip: { flex: 1, alignItems: 'center', paddingVertical: 6, borderRadius: radius.sm, borderWidth: 1 },
+  timingOn: { backgroundColor: colors.primary, borderColor: colors.primary },
+  timingOff: { backgroundColor: colors.surface, borderColor: colors.border },
+  timingText: { fontSize: 10, fontWeight: '700' },
+  medPurpose: { fontSize: 12, color: colors.textMuted, marginTop: 8 },
+  accessRow: { backgroundColor: colors.surface, borderRadius: radius.md, padding: 12, marginBottom: 8, borderWidth: 1, borderColor: colors.border },
   tagDangerText: { fontSize: 11, fontWeight: '700', color: '#B91C1C' },
   emptyState: { alignItems: 'center', paddingVertical: 48 },
   emptyIcon: { fontSize: 40, marginBottom: 12 },

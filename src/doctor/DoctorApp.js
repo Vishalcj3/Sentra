@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, SafeAreaView,
-  ScrollView, TextInput, ActivityIndicator, Alert, FlatList,
+  ScrollView, TextInput, ActivityIndicator, Alert, FlatList, Modal,
 } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import firestore from '@react-native-firebase/firestore';
@@ -19,6 +19,11 @@ export default function DoctorApp({ user, profile, onSignOut }) {
   const [queue, setQueue]             = useState([]);
   const [notifications, setNotif]     = useState([]);
   const [toast, setToast]             = useState(null);
+  const [emOpen, setEmOpen]           = useState(false);
+  const [emCode, setEmCode]           = useState('');
+  const [emPurpose, setEmPurpose]     = useState('');
+  const [emBusy, setEmBusy]           = useState(false);
+  const [emResult, setEmResult]       = useState(null);
 
   useEffect(() => {
     const onErr = (label) => (e) => console.warn(`[${label}] listener error:`, e?.message || e);
@@ -39,6 +44,48 @@ export default function DoctorApp({ user, profile, onSignOut }) {
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 5000); };
 
+  // Resolve a patient by the short code shown in the app (uid[0:10].toUpperCase())
+  // or by full UID, then grant a 2-hour emergency "break-glass" access.
+  const grantEmergencyAccess = async () => {
+    const code = emCode.trim();
+    if (!code || !emPurpose.trim()) { setEmResult({ ok: false, msg: 'Enter patient ID and purpose' }); return; }
+    setEmBusy(true); setEmResult(null);
+    try {
+      // 1) direct full-UID lookup
+      let target = null;
+      const direct = await firestore().collection('patients').doc(code).get();
+      if (direct.exists) target = { id: direct.id, ...direct.data() };
+      // 2) match the displayed short code
+      if (!target) {
+        const all = await firestore().collection('patients').get();
+        const up = code.toUpperCase();
+        const m = all.docs.find((d) => d.id.slice(0, 10).toUpperCase() === up);
+        if (m) target = { id: m.id, ...m.data() };
+      }
+      if (!target) { setEmResult({ ok: false, msg: `No patient found for ID "${code}"` }); setEmBusy(false); return; }
+
+      const expiresAt = firestore.Timestamp.fromDate(new Date(Date.now() + 2 * 60 * 60 * 1000));
+      await firestore().collection('consents').add({
+        patientId: target.id,
+        providerId,
+        providerName: profile?.name || 'Doctor',
+        orgName: profile?.orgName || null,
+        specialty: profile?.specialty || null,
+        scope: 'emergency_full_access',
+        purpose: emPurpose.trim(),
+        approved: true,
+        emergency: true,
+        approvedAt: firestore.FieldValue.serverTimestamp(),
+        expiresAt,
+        createdAt: firestore.FieldValue.serverTimestamp(),
+      });
+      setEmResult({ ok: true, msg: `🚨 Emergency access granted for ${target.name} — valid 2 hours. ${profile?.orgName || 'Hospital'} notified.` });
+      setEmCode(''); setEmPurpose('');
+    } catch (e) {
+      setEmResult({ ok: false, msg: 'Failed: ' + e.message });
+    } finally { setEmBusy(false); }
+  };
+
   const sharedProps = { user, profile, providerId, patients, setPatients, queue, notifications, showToast };
 
   return (
@@ -51,10 +98,44 @@ export default function DoctorApp({ user, profile, onSignOut }) {
             {!!profile?.orgName && <Text style={s.topbarSub}>{profile.orgName}</Text>}
           </View>
         </View>
-        <TouchableOpacity style={s.signOutBtn} onPress={onSignOut}>
-          <Text style={s.signOutText}>Sign out</Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <TouchableOpacity style={s.emBtn} onPress={() => { setEmResult(null); setEmOpen(true); }}>
+            <Text style={s.emBtnText}>🚨 Emergency</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={s.signOutBtn} onPress={onSignOut}>
+            <Text style={s.signOutText}>Sign out</Text>
+          </TouchableOpacity>
+        </View>
       </View>
+
+      {/* Emergency break-glass modal */}
+      <Modal visible={emOpen} animationType="slide" transparent onRequestClose={() => setEmOpen(false)}>
+        <View style={s.modalOverlay}>
+          <View style={s.modalSheet}>
+            <View style={s.modalHeader}>
+              <Text style={[s.modalTitle, { color: colors.danger }]}>🚨 Emergency Access</Text>
+              <TouchableOpacity onPress={() => setEmOpen(false)}><Text style={s.modalClose}>✕</Text></TouchableOpacity>
+            </View>
+            <Text style={s.emWarn}>Break-glass access grants you a patient's full records for 2 hours. The action is logged and the patient is notified and can revoke it at any time.</Text>
+
+            {emResult && (
+              <View style={[s.emResultBox, { backgroundColor: emResult.ok ? colors.accentTint : colors.dangerTint, borderColor: emResult.ok ? colors.accent : colors.danger }]}>
+                <Text style={{ color: emResult.ok ? colors.accent : colors.danger, fontSize: 13, fontWeight: '600' }}>{emResult.msg}</Text>
+              </View>
+            )}
+
+            <Text style={s.label}>Patient ID</Text>
+            <TextInput style={s.input} value={emCode} onChangeText={setEmCode} placeholder="e.g. BQOOCBYNKX" placeholderTextColor={colors.textMuted} autoCapitalize="characters" />
+
+            <Text style={s.label}>Purpose of access</Text>
+            <TextInput style={[s.input, { height: 80, textAlignVertical: 'top' }]} value={emPurpose} onChangeText={setEmPurpose} placeholder="e.g. Unconscious patient in ER, need medication history" placeholderTextColor={colors.textMuted} multiline />
+
+            <TouchableOpacity style={[s.emConfirmBtn, emBusy && { opacity: 0.6 }]} onPress={grantEmergencyAccess} disabled={emBusy}>
+              {emBusy ? <ActivityIndicator color="#fff" /> : <Text style={s.emConfirmText}>🚨 Grant 2-hour emergency access</Text>}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       <Tab.Navigator screenOptions={{ headerShown: false, tabBarStyle: s.tabBar, tabBarActiveTintColor: colors.primary, tabBarInactiveTintColor: colors.textMuted, tabBarLabelStyle: s.tabLabel }}>
         <Tab.Screen name="Patients" options={{ tabBarIcon: () => <Text style={{ fontSize: 18 }}>👥</Text> }}>
@@ -463,6 +544,17 @@ const s = StyleSheet.create({
   rolePillText: { fontSize: 10, fontWeight: '700', color: 'rgba(255,255,255,.9)', letterSpacing: 0.5 },
   signOutBtn: { borderWidth: 1, borderColor: 'rgba(255,255,255,.2)', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 },
   signOutText: { fontSize: 12, color: 'rgba(255,255,255,.7)', fontWeight: '600' },
+  emBtn: { backgroundColor: colors.danger, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7 },
+  emBtnText: { color: '#fff', fontSize: 12, fontWeight: '800' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,.45)', justifyContent: 'flex-end' },
+  modalSheet: { backgroundColor: colors.bg, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 18, paddingBottom: 32 },
+  modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, paddingTop: 4 },
+  modalTitle: { fontSize: 18, fontWeight: '700', color: colors.text },
+  modalClose: { fontSize: 20, color: colors.textMuted, paddingHorizontal: 8 },
+  emWarn: { fontSize: 12, color: colors.textMuted, lineHeight: 18, marginBottom: 14, backgroundColor: colors.dangerTint, padding: 10, borderRadius: radius.sm },
+  emResultBox: { borderWidth: 1, borderRadius: radius.sm, padding: 12, marginBottom: 12 },
+  emConfirmBtn: { backgroundColor: colors.danger, borderRadius: radius.sm, paddingVertical: 14, alignItems: 'center', marginTop: 8, ...shadow.sm },
+  emConfirmText: { color: '#fff', fontSize: 15, fontWeight: '800' },
   tabBar: { backgroundColor: colors.surface, borderTopColor: colors.border, borderTopWidth: 1, height: 60, paddingBottom: 8 },
   tabLabel: { fontSize: 10, fontWeight: '600' },
   screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 16, paddingTop: 8 },
