@@ -91,15 +91,19 @@ function PatientsTab({ providerId, showToast }) {
     } finally { setSearching(false); }
   };
 
+  const [patScans, setPatScans] = useState([]);
+
   const openPatient = async (p) => {
     setSelected(selected?.id === p.id ? null : p);
     if (selected?.id !== p.id) {
-      const [apptSnap, rxSnap, consentSnap] = await Promise.all([
+      const [apptSnap, rxSnap, consentSnap, scanSnap] = await Promise.all([
         firestore().collection('appointments').where('patientId','==',p.id).where('providerId','==',providerId).get(),
         firestore().collection('prescriptions').where('patientId','==',p.id).where('providerId','==',providerId).get(),
         firestore().collection('consents').where('patientId','==',p.id).where('providerId','==',providerId).get(),
+        firestore().collection('labScans').where('patientId','==',p.id).get(),
       ]);
       setStats({ visits: apptSnap.size, prescriptions: rxSnap.size, consents: consentSnap.size });
+      setPatScans(scanSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
     }
   };
 
@@ -132,6 +136,7 @@ function PatientsTab({ providerId, showToast }) {
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
                 <Text style={s.patientName}>{p.name}</Text>
+                <Text style={s.idText}>🆔 {p.id.slice(0, 10).toUpperCase()}</Text>
                 <Text style={s.patientSub}>{p.phone || p.email || 'No contact'}</Text>
                 {!!p.dob && <Text style={s.patientSub}>DOB: {p.dob}</Text>}
               </View>
@@ -147,6 +152,23 @@ function PatientsTab({ providerId, showToast }) {
                 {p.allergies?.length > 0 && (
                   <View style={[s.alertBox, { marginTop: 10 }]}>
                     <Text style={s.alertText}>⚠ Allergies: {p.allergies.join(', ')}</Text>
+                  </View>
+                )}
+                {patScans.length > 0 && (
+                  <View style={{ marginTop: 10 }}>
+                    <Text style={s.sectionLabel}>🩻 Lab scans ({patScans.length})</Text>
+                    {patScans.map((sc) => {
+                      const c = sc.status === 'abnormal' ? colors.danger : sc.status === 'pending' ? colors.warning : colors.accent;
+                      return (
+                        <View key={sc.id} style={s.scanRow}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={s.listTitle}>{sc.scanType} · {sc.bodyPart}</Text>
+                            <Text style={s.listSub}>{sc.findings || '—'}</Text>
+                          </View>
+                          <View style={[s.badge, { backgroundColor: c + '22' }]}><Text style={[s.badgeText, { color: c }]}>{sc.status}</Text></View>
+                        </View>
+                      );
+                    })}
                   </View>
                 )}
               </View>
@@ -463,6 +485,10 @@ const s = StyleSheet.create({
   avatarSmText: { fontSize: 13, fontWeight: '700', color: '#fff' },
   patientName: { fontSize: 15, fontWeight: '700', color: colors.text },
   patientSub: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
+  idText: { fontSize: 11, color: colors.primary, fontWeight: '700', marginTop: 2, letterSpacing: 0.3 },
+  scanRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.bg, borderRadius: radius.sm, padding: 10, marginBottom: 6, borderWidth: 1, borderColor: colors.border },
+  badge: { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 100 },
+  badgeText: { fontSize: 10, fontWeight: '700', textTransform: 'capitalize' },
   statRow: { flexDirection: 'row', gap: 8 },
   statBox: { flex: 1, backgroundColor: colors.bg, borderRadius: radius.sm, padding: 12, alignItems: 'center', borderWidth: 1, borderColor: colors.border },
   statNum: { fontSize: 24, fontWeight: '800', color: colors.primary },

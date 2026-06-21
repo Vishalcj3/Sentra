@@ -21,6 +21,7 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
   const [consents, setConsents]             = useState([]);
   const [appointments, setAppointments]     = useState([]);
   const [notifications, setNotifications]   = useState([]);
+  const [scans, setScans]                   = useState([]);
   const [toast, setToast]                   = useState(null);
   const [activeConsent, setActiveConsent]   = useState(null);
 
@@ -48,6 +49,8 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
           setNotifications(list);
           if (list[0] && !list[0].read) showToast(list[0].message);
         }, onErr('notifications')),
+      firestore().collection('labScans').where('patientId','==',patientId).orderBy('createdAt','desc')
+        .onSnapshot((snap) => { if (!snap) return; setScans(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); }, onErr('labScans')),
     ];
     return () => unsubs.forEach((u) => u());
   }, [patientId]);
@@ -65,7 +68,7 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
-  const sharedProps = { user, profile, patientId, prescriptions, consents, appointments, notifications, onProfileUpdate, onSignOut, bookAppointment, openConsent: setActiveConsent, showToast };
+  const sharedProps = { user, profile, patientId, prescriptions, consents, appointments, notifications, scans, onProfileUpdate, onSignOut, bookAppointment, openConsent: setActiveConsent, showToast };
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -77,6 +80,7 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
             <View style={s.rolePill}><Text style={s.rolePillText}>🧑‍⚕️ PATIENT</Text></View>
             {!!profile?.dob && <Text style={s.topbarSub}>DOB: {profile.dob}</Text>}
           </View>
+          <Text style={s.idText}>🆔 {patientId.slice(0, 10).toUpperCase()}</Text>
         </View>
         <TouchableOpacity style={s.signOutBtn} onPress={onSignOut}>
           <Text style={s.signOutText}>Sign out</Text>
@@ -121,9 +125,15 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
 }
 
 /* ── VAULT TAB ─────────────────────────────────────────────── */
-function VaultTab({ profile, prescriptions, consents, openConsent }) {
+function VaultTab({ profile, patientId, prescriptions, consents, scans = [], openConsent }) {
   return (
     <ScrollView style={s.screen} contentContainerStyle={{ paddingBottom: 32 }}>
+      <View style={[s.card, { backgroundColor: colors.indigoTint, borderColor: colors.indigo + '40' }]}>
+        <Text style={[s.cardSub, { color: colors.indigo, fontWeight: '700', marginBottom: 2 }]}>YOUR PATIENT ID</Text>
+        <Text style={{ fontSize: 22, fontWeight: '800', color: colors.indigo, letterSpacing: 1 }}>{patientId.slice(0, 10).toUpperCase()}</Text>
+        <Text style={[s.cardSub, { color: colors.indigo + 'CC' }]}>Share this ID with your doctor or lab to link records.</Text>
+      </View>
+
       {consents.length > 0 && (
         <View style={[s.card, { borderColor: '#F59E0B', backgroundColor: '#FFFBEB' }]}>
           <Text style={[s.cardTitle, { color: '#92400E' }]}>⚠ {consents.length} access request(s) waiting</Text>
@@ -162,6 +172,25 @@ function VaultTab({ profile, prescriptions, consents, openConsent }) {
       {prescriptions.length === 0
         ? <View style={s.emptyState}><Text style={s.emptyIcon}>💊</Text><Text style={s.emptySub}>No prescriptions yet</Text></View>
         : prescriptions.map((p) => <PrescriptionCard key={p.id} p={p} />)}
+
+      <Text style={s.sectionLabel}>🩻 Lab scans & results</Text>
+      {scans.length === 0
+        ? <View style={s.emptyState}><Text style={s.emptyIcon}>🩻</Text><Text style={s.emptySub}>No scans on record</Text></View>
+        : scans.map((sc) => {
+            const c = sc.status === 'abnormal' ? colors.danger : sc.status === 'pending' ? colors.warning : colors.accent;
+            return (
+              <View key={sc.id} style={s.card}>
+                <View style={base.spaceBetween}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.cardTitle}>{sc.scanType} · {sc.bodyPart}</Text>
+                    <Text style={s.cardSub}>{sc.orgName || sc.labTechName}</Text>
+                  </View>
+                  <View style={[s.badge, { backgroundColor: c + '22' }]}><Text style={[s.badgeText, { color: c }]}>{sc.status}</Text></View>
+                </View>
+                {!!sc.findings && <View style={s.reasoningBlock}><Text style={s.reasoningText}>{sc.findings}</Text></View>}
+              </View>
+            );
+          })}
     </ScrollView>
   );
 }
@@ -444,6 +473,7 @@ const s = StyleSheet.create({
   topbarTitle: { fontSize: 16, fontWeight: '700', color: '#fff' },
   topbarRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
   topbarSub: { fontSize: 11, color: 'rgba(255,255,255,.6)' },
+  idText: { fontSize: 11, color: 'rgba(255,255,255,.85)', fontWeight: '700', marginTop: 4, letterSpacing: 0.5 },
   rolePill: { backgroundColor: 'rgba(255,255,255,.15)', borderRadius: 100, paddingHorizontal: 8, paddingVertical: 2 },
   rolePillText: { fontSize: 10, fontWeight: '700', color: 'rgba(255,255,255,.9)', letterSpacing: 0.5 },
   signOutBtn: { borderWidth: 1, borderColor: 'rgba(255,255,255,.2)', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 },

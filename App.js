@@ -10,6 +10,8 @@ import AuthScreen from './src/screens/AuthScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
 import PatientApp from './src/patient/PatientApp';
 import DoctorApp from './src/doctor/DoctorApp';
+import LabApp from './src/lab/LabApp';
+import PharmacistApp from './src/pharmacy/PharmacistApp';
 import { colors } from './src/styles/theme';
 
 const Stack = createNativeStackNavigator();
@@ -87,6 +89,14 @@ export default function App() {
                   onSignOut={() => auth().signOut()}
                 />
               )}
+            </Stack.Screen>
+          ) : role === 'lab' ? (
+            <Stack.Screen name="LabApp">
+              {() => <LabApp user={user} profile={profile} onSignOut={() => auth().signOut()} />}
+            </Stack.Screen>
+          ) : role === 'pharmacist' ? (
+            <Stack.Screen name="PharmacistApp">
+              {() => <PharmacistApp user={user} profile={profile} onSignOut={() => auth().signOut()} />}
             </Stack.Screen>
           ) : (
             <Stack.Screen name="DoctorApp">
