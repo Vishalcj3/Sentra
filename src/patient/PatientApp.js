@@ -25,25 +25,29 @@ export default function PatientApp({ user, profile, onProfileUpdate, onSignOut }
   const [activeConsent, setActiveConsent]   = useState(null);
 
   useEffect(() => {
+    const onErr = (label) => (e) => console.warn(`[${label}] listener error:`, e?.message || e);
+
     const unsubs = [
       firestore().collection('prescriptions').where('patientId','==',patientId).orderBy('createdAt','desc')
         .onSnapshot(async (snap) => {
+          if (!snap) return;
           const list = await Promise.all(snap.docs.map(async (d) => {
             const data = d.data();
             return decryptPrescription({ id: d.id, ...data }, data.encryptedBy || data.providerId);
           }));
           setPrescriptions(list);
-        }),
+        }, onErr('prescriptions')),
       firestore().collection('consents').where('patientId','==',patientId).where('approved','==',false)
-        .onSnapshot((snap) => setConsents(snap.docs.map((d) => ({ id: d.id, ...d.data() })))),
+        .onSnapshot((snap) => { if (!snap) return; setConsents(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); }, onErr('consents')),
       firestore().collection('appointments').where('patientId','==',patientId).orderBy('scheduledAt','desc')
-        .onSnapshot((snap) => setAppointments(snap.docs.map((d) => ({ id: d.id, ...d.data() })))),
+        .onSnapshot((snap) => { if (!snap) return; setAppointments(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); }, onErr('appointments')),
       firestore().collection('notifications').where('patientId','==',patientId).orderBy('createdAt','desc')
         .onSnapshot((snap) => {
+          if (!snap) return;
           const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
           setNotifications(list);
           if (list[0] && !list[0].read) showToast(list[0].message);
-        }),
+        }, onErr('notifications')),
     ];
     return () => unsubs.forEach((u) => u());
   }, [patientId]);

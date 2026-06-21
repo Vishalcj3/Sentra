@@ -21,16 +21,18 @@ export default function DoctorApp({ user, profile, onSignOut }) {
   const [toast, setToast]             = useState(null);
 
   useEffect(() => {
+    const onErr = (label) => (e) => console.warn(`[${label}] listener error:`, e?.message || e);
+
     const unsubs = [
       firestore().collection('appointments')
         .where('providerId', '==', providerId)
         .where('status', '==', 'booked')
         .orderBy('scheduledAt', 'asc')
-        .onSnapshot((snap) => setQueue(snap.docs.map((d) => ({ id: d.id, ...d.data() })))),
+        .onSnapshot((snap) => { if (!snap) return; setQueue(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); }, onErr('queue')),
       firestore().collection('notifications')
         .where('providerId', '==', providerId)
         .orderBy('createdAt', 'desc')
-        .onSnapshot((snap) => setNotif(snap.docs.map((d) => ({ id: d.id, ...d.data() })))),
+        .onSnapshot((snap) => { if (!snap) return; setNotif(snap.docs.map((d) => ({ id: d.id, ...d.data() }))); }, onErr('notifications')),
     ];
     return () => unsubs.forEach((u) => u());
   }, [providerId]);
