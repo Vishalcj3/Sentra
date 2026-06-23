@@ -1,3 +1,6 @@
+// Secure PRNG polyfill — MUST be imported before tweetnacl (via App -> crypto.js)
+// so nacl picks up crypto.getRandomValues. Without this, nacl throws "no PRNG".
+import 'react-native-get-random-values';
 import 'react-native-gesture-handler';
 import { registerRootComponent } from 'expo';
 import App from './App';
