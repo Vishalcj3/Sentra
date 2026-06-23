@@ -1,0 +1,33 @@
+# ── Secrets — NEVER commit these ────────────────────────────
+serviceAccountKey.json
+*serviceAccount*.json
+.env
+.env.*
+*.pem
+*.key
+
+# ── Firebase ────────────────────────────────────────────────
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+firestore-debug.log
+ui-debug.log
+*.log
+
+# ── Node ────────────────────────────────────────────────────
+node_modules/
+functions/node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# ── Build / cache ───────────────────────────────────────────
+dist/
+build/
+.cache/
+coverage/
+
+# ── OS / editor ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

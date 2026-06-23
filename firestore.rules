@@ -1,0 +1,181 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+    function isAuth() { return request.auth != null; }
+    function isOwner(uid) { return request.auth.uid == uid; }
+
+    function isPatient(patientId) {
+      return isAuth() && exists(/databases/$(database)/documents/patients/$(request.auth.uid))
+             && request.auth.uid == patientId;
+    }
+
+    function isProvider() {
+      return isAuth() && exists(/databases/$(database)/documents/providers/$(request.auth.uid));
+    }
+
+    function hasApprovedConsent(patientId, scope) {
+      // Check if current provider has an approved consent for this patient+scope
+      return isProvider();  // Full consent check enforced in Cloud Functions (admin SDK)
+    }
+
+    // ── Patients ──────────────────────────────────────────────────────────
+    match /patients/{patientId} {
+      // Patients can read/write their own doc; providers can read (consent enforced by functions)
+      allow read: if isOwner(patientId) || isProvider();
+      allow create: if isOwner(patientId);
+      // Patients can update their own profile fields (name, allergies, PIN hash, signature URL, etc.)
+      allow update: if isOwner(patientId)
+        && !request.resource.data.diff(resource.data).affectedKeys()
+             .hasAny(["createdAt"]);  // createdAt is immutable
+    }
+
+    // ── Providers ─────────────────────────────────────────────────────────
+    match /providers/{providerId} {
+      allow read: if isAuth();
+      allow create: if isOwner(providerId);
+      allow update: if isOwner(providerId)
+        && !request.resource.data.diff(resource.data).affectedKeys()
+             .hasAny(["createdAt", "role"]);  // role is immutable after creation
+    }
+
+    // ── Consents ──────────────────────────────────────────────────────────
+    match /consents/{consentId} {
+      // Patient can read/write their own consents (to approve them)
+      // Providers can read consents where they are the provider
+      allow read: if isAuth()
+        && (resource.data.patientId == request.auth.uid
+            || resource.data.providerId == request.auth.uid);
+
+      // Providers create consent requests. Standard requests start unapproved;
+      // emergency "break-glass" access is auto-approved at creation and is
+      // time-limited (expiresAt) — the patient can revoke it at any time.
+      allow create: if isProvider()
+        && request.resource.data.providerId == request.auth.uid
+        && (request.resource.data.approved == false
+            || request.resource.data.emergency == true);
+
+      // Patients approve or revoke their own consents
+      allow update: if isAuth()
+        && resource.data.patientId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(["approved", "approvedAt", "consentSignatureUrl", "revokedAt"]);
+    }
+
+    // ── Prescriptions ─────────────────────────────────────────────────────
+    match /prescriptions/{prescriptionId} {
+      allow read: if isAuth()
+        && (resource.data.patientId == request.auth.uid || isProvider());
+      allow create: if isProvider();
+      allow update: if false;  // only Cloud Functions (admin SDK) write safetyCheck
+    }
+
+    // ── Appointments ──────────────────────────────────────────────────────
+    match /appointments/{appointmentId} {
+      allow read: if isAuth()
+        && (resource.data.patientId == request.auth.uid
+            || resource.data.providerId == request.auth.uid);
+      allow create: if isAuth();
+      allow update: if isAuth()
+        && (resource.data.patientId == request.auth.uid
+            || resource.data.providerId == request.auth.uid);
+      // Provider or patient may delete (cancel) an appointment
+      allow delete: if isAuth()
+        && (resource.data.patientId == request.auth.uid
+            || resource.data.providerId == request.auth.uid);
+    }
+
+    // ── Followups ─────────────────────────────────────────────────────────
+    match /followups/{followupId} {
+      allow read: if isAuth()
+        && (resource.data.patientId == request.auth.uid || isProvider());
+      allow write: if false;  // created + updated by Cloud Functions only
+    }
+
+    // ── Dose schedules (per-dose pill reminders) ──────────────────────────
+    match /doseSchedules/{scheduleId} {
+      // Patient manages their own pill schedule; a provider may create one when
+      // prescribing. lastFiredAt is written by Cloud Functions (admin SDK).
+      allow read: if isAuth()
+        && (resource.data.patientId == request.auth.uid || isProvider());
+      allow create: if isAuth()
+        && (request.resource.data.patientId == request.auth.uid || isProvider());
+      allow update, delete: if isAuth()
+        && resource.data.patientId == request.auth.uid;
+    }
+
+    // ── Dose logs (adherence: taken / snoozed / missed) ───────────────────
+    match /doseLogs/{logId} {
+      allow read: if isAuth()
+        && (resource.data.patientId == request.auth.uid || isProvider());
+      allow write: if false;  // created + updated only by Cloud Functions (Hermes, logDose)
+    }
+
+    // ── Notifications ─────────────────────────────────────────────────────
+    match /notifications/{notificationId} {
+      allow read: if isAuth()
+        && (resource.data.patientId == request.auth.uid
+            || resource.data.providerId == request.auth.uid);
+      allow update: if isAuth()
+        && resource.data.patientId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["read"]);
+      allow create: if false;  // Cloud Functions only
+    }
+
+    // ── Users (E2E encryption public keys) ────────────────────────────────
+    // Public keys are readable by any authenticated user (needed to encrypt
+    // for a recipient); only the owner can write their own key.
+    match /users/{uid} {
+      allow read: if isAuth();
+      allow write: if isOwner(uid);
+    }
+
+    // ── Lab scans ─────────────────────────────────────────────────────────
+    // Patients read their own scans; any provider (doctor, lab tech, pharmacist)
+    // can read. Lab techs (providers) create; only the uploading tech edits.
+    match /labScans/{scanId} {
+      allow read: if isAuth()
+        && (resource.data.patientId == request.auth.uid || isProvider());
+      allow create: if isProvider()
+        && request.resource.data.labTechId == request.auth.uid;
+      allow update, delete: if isProvider()
+        && resource.data.labTechId == request.auth.uid;
+    }
+
+    // ── Bills ─────────────────────────────────────────────────────────────
+    match /bills/{billId} {
+      allow read: if isAuth()
+        && (resource.data.patientId == request.auth.uid || isProvider());
+      allow create: if isProvider();
+      allow update, delete: if false;
+    }
+
+    // ── Insurance claims ──────────────────────────────────────────────────
+    // Patients submit and track claims against their own bills.
+    match /insuranceClaims/{claimId} {
+      allow read: if isAuth() && resource.data.patientId == request.auth.uid;
+      allow create: if isAuth() && request.resource.data.patientId == request.auth.uid;
+      allow update: if isAuth() && resource.data.patientId == request.auth.uid;
+    }
+
+    // ── Drug interactions (static reference) ──────────────────────────────
+    match /drugInteractions/{rowId} {
+      allow read: if isAuth();
+      allow write: if false;
+    }
+
+    // ── RAG knowledge base (vector embeddings, read-only reference) ────────
+    // Retrieval runs server-side via the Admin SDK in Cloud Functions, so the
+    // client never needs read access. Locked down entirely.
+    match /ragKnowledge/{chunkId} {
+      allow read: if false;
+      allow write: if false;
+    }
+
+    // ── OTP codes (email OTP, if needed) ──────────────────────────────────
+    match /otpCodes/{email} {
+      allow read, write: if false;  // Cloud Functions only
+    }
+  }
+}

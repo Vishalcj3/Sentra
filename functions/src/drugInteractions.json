@@ -1,0 +1,22 @@
+[
+  { "drugA": "warfarin", "drugB": "aspirin", "severity": "severe", "description": "Increased risk of bleeding due to combined anticoagulant and antiplatelet effects." },
+  { "drugA": "warfarin", "drugB": "ibuprofen", "severity": "severe", "description": "NSAIDs increase bleeding risk when combined with warfarin." },
+  { "drugA": "metformin", "drugB": "contrast dye", "severity": "moderate", "description": "Risk of lactic acidosis, especially with renal impairment." },
+  { "drugA": "simvastatin", "drugB": "clarithromycin", "severity": "severe", "description": "Increased risk of statin-induced myopathy and rhabdomyolysis." },
+  { "drugA": "lisinopril", "drugB": "potassium", "severity": "moderate", "description": "Risk of hyperkalemia when ACE inhibitors are combined with potassium supplements." },
+  { "drugA": "sertraline", "drugB": "tramadol", "severity": "severe", "description": "Increased risk of serotonin syndrome." },
+  { "drugA": "metformin", "drugB": "alcohol", "severity": "moderate", "description": "Increased risk of lactic acidosis and hypoglycemia." },
+  { "drugA": "amlodipine", "drugB": "simvastatin", "severity": "moderate", "description": "Increased simvastatin plasma concentration, raising myopathy risk at higher doses." },
+  { "drugA": "omeprazole", "drugB": "clopidogrel", "severity": "moderate", "description": "Reduces antiplatelet effectiveness of clopidogrel via CYP2C19 inhibition." },
+  { "drugA": "digoxin", "drugB": "furosemide", "severity": "moderate", "description": "Diuretic-induced hypokalemia increases risk of digoxin toxicity." },
+  { "drugA": "ciprofloxacin", "drugB": "theophylline", "severity": "severe", "description": "Increased theophylline levels, risk of seizures and arrhythmia." },
+  { "drugA": "azithromycin", "drugB": "warfarin", "severity": "moderate", "description": "May potentiate anticoagulant effect, increasing bleeding risk." },
+  { "drugA": "paracetamol", "drugB": "warfarin", "severity": "minor", "description": "High-dose or prolonged use may mildly potentiate anticoagulant effect." },
+  { "drugA": "metoprolol", "drugB": "verapamil", "severity": "severe", "description": "Combined negative chronotropic/inotropic effect, risk of bradycardia and heart block." },
+  { "drugA": "insulin", "drugB": "metformin", "severity": "minor", "description": "Combined glucose-lowering effect; monitor for hypoglycemia, generally safe combination." },
+  { "drugA": "atorvastatin", "drugB": "erythromycin", "severity": "severe", "description": "Increased statin levels via CYP3A4 inhibition, raising myopathy risk." },
+  { "drugA": "losartan", "drugB": "spironolactone", "severity": "moderate", "description": "Risk of hyperkalemia with combined ARB and potassium-sparing diuretic." },
+  { "drugA": "phenytoin", "drugB": "fluconazole", "severity": "moderate", "description": "Fluconazole increases phenytoin levels, risk of toxicity." },
+  { "drugA": "methotrexate", "drugB": "ibuprofen", "severity": "severe", "description": "NSAIDs reduce methotrexate clearance, increasing toxicity risk." },
+  { "drugA": "levothyroxine", "drugB": "calcium carbonate", "severity": "minor", "description": "Calcium reduces levothyroxine absorption; space doses by 4 hours." }
+]

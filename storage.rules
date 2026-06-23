@@ -1,0 +1,17 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Patient signature (profile-level)
+    match /signatures/{patientId}.png {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == patientId;
+    }
+
+    // Consent-specific signature evidence
+    match /consent-signatures/{patientId}/{consentId}.png {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == patientId;
+    }
+  }
+}
