@@ -928,6 +928,13 @@ function RequestsTab({ pendingRequests, consents, providerMap, approveConsent, d
                   </View>
                   <Text style={s.listSub}>{timeAgo(c.createdAt)}</Text>
                 </View>
+                {c.requestedRecords?.length > 0 && (
+                  <View style={s.recordsRow}>
+                    {c.requestedRecords.map((r) => (
+                      <View key={r} style={s.recordChip}><Text style={s.recordChipText}>{r}</Text></View>
+                    ))}
+                  </View>
+                )}
                 <View style={s.purposeBox}><Text style={s.purposeText}>📋 {purposeOf(c)}</Text></View>
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
                   <TouchableOpacity style={[s.primaryBtn, { flex: 1 }]} onPress={() => approveConsent(c)}>
@@ -1030,6 +1037,7 @@ function PrescriptionCard({ p }) {
           <Text style={s.badgeText}>{status || 'checking'}</Text>
         </View>
       </View>
+      {!!p.purpose && <Text style={[s.listSub, { marginTop: 6 }]}>📋 Purpose: {p.purpose}</Text>}
       {!!p.safetyCheck?.reasoning && (
         <View style={s.reasoningBlock}><Text style={s.reasoningText}>{p.safetyCheck.reasoning}</Text></View>
       )}
@@ -1057,6 +1065,9 @@ const s = StyleSheet.create({
   modalClose: { fontSize: 20, color: colors.textMuted, paddingHorizontal: 8 },
   notifRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, borderRadius: radius.md, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: colors.border },
   unreadDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary },
+  recordsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  recordChip: { backgroundColor: 'rgba(217,119,6,.15)', borderRadius: 100, paddingHorizontal: 10, paddingVertical: 4 },
+  recordChipText: { fontSize: 11, fontWeight: '700', color: '#B45309' },
   purposeBox: { marginTop: 10, backgroundColor: 'rgba(255,255,255,.6)', borderRadius: radius.sm, padding: 10 },
   purposeText: { fontSize: 13, color: '#92400E', fontWeight: '600' },
   denyBtn: { borderWidth: 1.5, borderColor: colors.danger, borderRadius: radius.sm, paddingVertical: 12, alignItems: 'center' },
