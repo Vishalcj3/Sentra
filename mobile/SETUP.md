@@ -7,7 +7,7 @@
 
 ## 1. Install dependencies
 ```bash
-cd C:\Users\Asus\Downloads\vortexa-mobile
+cd mobile
 npm install
 ```
 

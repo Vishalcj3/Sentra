@@ -1,0 +1,26 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+serviceAccountKey.json
+*serviceAccount*.json
+google-services.json
+GoogleService-Info.plist
+*.pem
+*.key
+
+# Dependencies and builds
+node_modules/
+dist/
+build/
+.expo/
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/

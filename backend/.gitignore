@@ -3,6 +3,7 @@ serviceAccountKey.json
 *serviceAccount*.json
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 
