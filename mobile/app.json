@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "VORTEXA",
+    "slug": "vortexa",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#0C4A6E"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.vortexa.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0C4A6E"
+      },
+      "package": "com.vortexa.app",
+      "googleServicesFile": "./google-services.json"
+    },
+    "plugins": [
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth",
+      "expo-secure-store"
+    ]
+  }
+}
