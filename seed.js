@@ -36,7 +36,7 @@ async function seed() {
   batch.set(providerRef, {
     name: "Dr. Anitha Raman",
     role: "doctor",
-    orgName: "VORTEXA Demo Clinic",
+    orgName: "Sentra Demo Clinic",
     createdAt: new Date(),
   });
 

@@ -43,7 +43,7 @@ async function seed() {
   batch.set(db.collection("providers").doc("demo-doctor-1"), {
     name: "Dr. Anitha Raman",
     role: "doctor",
-    orgName: "VORTEXA Demo Clinic",
+    orgName: "Sentra Demo Clinic",
     createdAt: new Date(),
   });
   batch.set(db.collection("patients").doc("demo-patient-clean"), {

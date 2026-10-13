@@ -1,7 +1,7 @@
 /**
  * chromaDb.js
  *
- * Chroma Cloud vector store for the VORTEXA RAG "details" — the clinical
+ * Chroma Cloud vector store for the Sentra RAG "details" — the clinical
  * knowledge base (drug interactions, contraindications, guidelines, …).
  *
  * Per the security split:

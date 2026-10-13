@@ -1,4 +1,4 @@
-# VORTEXA Firestore Schema v2
+# Sentra Firestore Schema v2
 
 Field names are canonical — don't improvise new ones mid-build.
 

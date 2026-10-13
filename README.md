@@ -1,15 +1,54 @@
-# VORTEXA — 24hr build guide
+# 🩺 Sentra — Patient-Owned Prescription Vault with a Live AI Safety Agent
 
-## You (backend/AI) — setup, in order
+**Sentra** puts a patient's prescription history in their own hands and gates every provider's
+access behind **explicit consent** — then runs a **live AI safety agent** over any new
+prescription before it's issued. Instead of a static "AI verified ✓" badge, Sentra streams the
+agent's **actual reasoning trace** and raises a flag the moment it finds a dangerous interaction
+(e.g. prescribing **aspirin** to a patient already on **warfarin** → severe-interaction flag, live).
 
-1. `npm install -g firebase-tools` (if not already installed)
-2. `firebase login`
-3. `firebase init` in this folder — select Firestore + Functions + Hosting,
-   point Functions source at `functions/`, choose JavaScript, don't
-   overwrite the files already here.
-4. Get a free Gemini API key: https://aistudio.google.com/app/apikey
-   (no card required, generous free tier)
-5. Set the keys for local emulation — create `functions/.env`:
+> **The edge:** most tools show a verdict. Sentra shows its **reasoning** — the safety agent's
+> step-by-step trace appears first, then the flag — so a clinician sees *why*, not just *what*.
+> Drug-interaction, duplicate-prescription and polypharmacy checks are all part of the same
+> reasoning call, not bolt-ons.
+
+---
+
+## ✨ Features
+
+- **🔐 Consent-gated access** — records are patient-owned; a provider requests access, the patient
+  approves via a consent toggle, and the **consent log is the enforcement point** for every read.
+- **🧠 Live AI safety agent** — reasons over a new prescription against the patient's active meds
+  and a clinical knowledge base, surfacing interaction / duplicate / polypharmacy risks with a
+  visible reasoning trace (Gemini-backed).
+- **💬 Hermes assistant** — a warm, concise in-app health assistant for patients.
+- **🔔 Live reminders** — appointment **token** countdowns and checkup/refill follow-ups fire in
+  real time via scheduled Cloud Functions (no page refresh).
+- **📚 RAG knowledge base** — clinical "details" live in **Chroma Cloud** (collection
+  `ragKnowledge`) with a pure-JS 256-dim hash-embedding path (zero API cost) and an in-memory
+  fallback so safety checks never block if Chroma is unreachable.
+
+---
+
+## 🧱 Stack
+
+```
+Firebase — Firestore (data) · Cloud Functions (safety agent, reminders) · Hosting
+AI       — Google Gemini (reasoning) · Chroma Cloud vector store (RAG)
+Auth     — consent-log access control + patient/provider identities
+```
+
+Schema is documented in [`SCHEMA.md`](SCHEMA.md); the RAG engine is in `functions/src/rag.js`,
+the safety reasoning in `functions/src/` (Gemini client + knowledge base).
+
+---
+
+## 🚀 Setup
+
+1. `npm install -g firebase-tools` → `firebase login`
+2. `firebase init` in this folder — Firestore + Functions + Hosting, Functions source `functions/`,
+   JavaScript, **don't** overwrite existing files.
+3. Get a free Gemini API key: https://aistudio.google.com/app/apikey
+4. Create `functions/.env`:
    ```
    GEMINI_API_KEY=your_key_here
    DEMO_MODE=true
@@ -17,101 +56,41 @@
    # Chroma Cloud — RAG knowledge vector store (clinical "details")
    CHROMA_API_KEY=ck-...
    CHROMA_TENANT=...
-   CHROMA_DATABASE=Vortexa
-   RAG_USE_CHROMA=true   # set "false" to force the offline in-memory KB
+   CHROMA_DATABASE=Vortexa          # the existing Chroma Cloud database name
+   RAG_USE_CHROMA=true              # "false" forces the offline in-memory KB
    ```
-6. `cd functions && npm install`  (installs `chromadb` among others)
-7. Run emulators to test before deploying:
-   ```
-   firebase emulators:start --only functions,firestore
-   ```
-8. When ready to actually deploy (so the live URL works for judging):
-   ```
-   firebase functions:config:set gemini.key="your_key_here"
-   firebase deploy --only functions,firestore:rules
-   ```
-   Note: for `onCall`/`onSchedule` v2 functions, prefer setting env vars
-   directly in the Firebase Console under Function > Configuration, or use
-   `firebase functions:secrets:set GEMINI_API_KEY` — faster than the old
-   config API and works the same way in code (`process.env.GEMINI_API_KEY`).
+5. `cd functions && npm install`
+6. Local test: `firebase emulators:start --only functions,firestore`
+7. Deploy: `firebase deploy --only functions,firestore:rules`
+   (set `GEMINI_API_KEY` via `firebase functions:secrets:set` or the Console → Function → Configuration)
 
-## Seeding the RAG knowledge base (Chroma Cloud)
+> **Note:** the Firebase project id (`vortexa-d430e`) and the auth hash salt in `patientAuth.js`
+> are retained as-is — they are the live project's identifiers; renaming them would break deploys
+> and existing credential hashes.
 
-The clinical knowledge base lives in **Chroma Cloud** (collection `ragKnowledge`),
-not Firestore. Seed it once (and whenever `functions/src/knowledgeBase.js` changes):
-
+### Seed the RAG knowledge base (Chroma Cloud)
 ```
-node seed-chroma.js
+node seed-chroma.js   # re-run whenever functions/src/knowledgeBase.js changes
 ```
+Uses the `CHROMA_*` creds from `functions/.env`; embeddings are pure-JS hash vectors (no API cost).
+`rag.js` queries Chroma first and falls back to an in-memory copy if it's unreachable.
 
-No `serviceAccountKey.json` needed — it uses the `CHROMA_*` creds from
-`functions/.env`. Embeddings are the pure-JS 256-dim hash vectors (zero API/cost).
-At request time `rag.js` queries Chroma first and falls back to an in-memory copy
-of the knowledge base if Chroma is unreachable, so safety checks never block.
-
-> Legacy: `node seed-rag.js` (writes the same data to Firestore) is kept for
-> reference but is no longer on the retrieval path.
-
-## Seeding demo data
-
-1. Firebase Console → Project Settings → Service Accounts → Generate new
-   private key → save as `serviceAccountKey.json` in this folder (same
-   level as `seed.js`). **Do not commit this file or share it.**
-2. `npm install firebase-admin` in this folder (top level, not functions/)
-3. Run **5–10 minutes before judging**, not earlier:
-   ```
-   node seed.js
-   ```
-4. This creates:
+### Seed demo data
+1. Firebase Console → Project Settings → Service Accounts → Generate new private key → save as
+   `serviceAccountKey.json` here (**never commit or share it**).
+2. `npm install firebase-admin` (top level), then `node seed.js`. This creates:
    - `demo-patient-clean` — calm walkthrough, no flags
-   - `demo-patient-flagged` — already on warfarin; prescribing aspirin to
-     this patient WILL trigger a severe interaction flag live
+   - `demo-patient-flagged` — on warfarin; prescribing aspirin triggers a **severe interaction flag** live
    - `demo-doctor-1` — provider for the dashboard
-   - An appointment ~35 seconds out, so a token reminder fires live
-   - A followup due immediately, so a checkup reminder fires on first run
+   - an appointment ~35s out (token reminder fires live) and a follow-up due immediately
 
-## Demo script (aim for under 4 minutes)
+---
 
-1. **Open with the problem** (30s) — fragmented records, no patient
-   control, institution-controlled access. (Straight from your problem
-   statement — keep this tight, judges have read PS docs before.)
+## 🗺️ Future scope
 
-2. **Consent flow** (30s) — show the doctor app requesting access to
-   `demo-patient-flagged`, patient app shows the consent toggle, approve
-   it. Say plainly: *"real signature verification is architected in our
-   design doc; for the 24hr build we're demoing the consent-log layer,
-   which is the actual access-control enforcement point."*
+Real cryptographic consent signatures · **ABDM** integration · federated learning across
+institutions · multilingual IVR for low-literacy / rural access.
 
-3. **The safety agent, live** (60s) — as the doctor, prescribe `aspirin`
-   to `demo-patient-flagged` (who's on warfarin). Show the reasoning
-   trace appearing first, then the severe flag. This is your best
-   differentiator — most teams show a static "AI verified ✓" badge, you
-   show the actual reasoning step.
+---
 
-4. **Appointment + token + Hermes, live** (60s) — show the patient app's
-   token number and countdown. Within the first minute, the seeded
-   appointment's reminder fires — point at the live notification toast
-   appearing without a page refresh. Mention the checkup/refill follow-up
-   reminder firing the same way.
-
-5. **Fraud/pattern note** (15s) — mention the duplicate-prescription /
-   polypharmacy check is part of the same reasoning call, not a separate
-   bolt-on.
-
-6. **Close with future scope** (15s) — real crypto signatures, ABDM
-   integration, federated learning, multilingual IVR (you've already
-   thought hard about this in your rural project — one sentence is
-   enough here, don't over-promise).
-
-## Cut list if you're behind schedule
-
-In order of what to cut first if hours run short:
-1. Fraud/pattern detection UI (keep it as one line in the safety agent's
-   reasoning prompt, skip a dedicated screen)
-2. Followup/refill reminders (keep token reminders only — they're more
-   visually impressive live)
-3. Doctor dashboard polish — a plain table beats a half-built fancy one
-4. Multi-provider support — hardcode to one demo doctor
-
-Never cut: the live safety-agent reasoning trace and the live Hermes
-notification. Those are your two "wow, it actually ran" moments.
+_Patient-owned prescription vault with consent-gated access and a live, explainable AI safety agent._

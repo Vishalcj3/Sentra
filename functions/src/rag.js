@@ -1,5 +1,5 @@
 /**
- * rag.js  —  VORTEXA Retrieval-Augmented Generation engine
+ * rag.js  —  Sentra Retrieval-Augmented Generation engine
  *
  * Pipeline:
  *   1. Build a multi-angle query from patient context + new drug

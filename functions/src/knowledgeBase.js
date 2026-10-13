@@ -1,7 +1,7 @@
 /**
  * knowledgeBase.js
  *
- * Canonical medical knowledge base for VORTEXA RAG.
+ * Canonical medical knowledge base for Sentra RAG.
  * Each entry is a self-contained prose chunk — rich enough to embed well
  * and to be quoted directly in Gemini's reasoning trace.
  *
